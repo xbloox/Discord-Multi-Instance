@@ -1,0 +1,83 @@
+Clear-Host
+function Write-RainbowLine { param ([string]$Text) $colors = @("Red","Yellow","Green","Cyan","Blue","Magenta"); $index=0; foreach ($char in $Text.ToCharArray()) { Write-Host -NoNewline $char -ForegroundColor $colors[$index % $colors.Count]; $index++ } Write-Host "" }
+Write-RainbowLine "=========================================="
+Write-Host "       Multi-Instance, by bloo" -ForegroundColor Blue
+Write-RainbowLine "=========================================="
+Write-Host ""
+function Info { param ([string]$Message) Write-Host "[INFO] $Message" -ForegroundColor Green }
+function ErrorMsg { param ([string]$Message) Write-Host "[ERROR] $Message" -ForegroundColor Red }
+Info "Starting Discord Multi-Instance Setup..."
+$silent = $true
+$discordDir = Join-Path $env:LOCALAPPDATA "Discord"
+if (-Not (Test-Path $discordDir)) { ErrorMsg "Discord installation not found in $discordDir."; Pause; exit 1 }
+$latestVersionFolder = Get-ChildItem -Path $discordDir -Directory -Filter "app-*" | Sort-Object Name -Descending | Select-Object -First 1
+if (-Not $latestVersionFolder) { ErrorMsg "No version folder found in $discordDir."; Pause; exit 1 }
+Info "Latest Discord version folder found: $($latestVersionFolder.Name)"
+$discordExe = Join-Path $latestVersionFolder.FullName "Discord.exe"
+if (-Not (Test-Path $discordExe)) { ErrorMsg "Discord executable not found: $discordExe"; Pause; exit 1 }
+Info "Discord executable located at: $discordExe"
+Info "Closing any running Discord processes..."
+Stop-Process -Name "Discord" -Force -ErrorAction SilentlyContinue
+$desktop = [Environment]::GetFolderPath("Desktop")
+$shortcutPath = Join-Path $desktop "DiscordMultiInstance.lnk"
+Info "Creating shortcut at: $shortcutPath"
+try {
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $discordExe
+    $shortcut.Arguments = "--multi-instance"
+    $shortcut.WorkingDirectory = $discordDir
+    $shortcut.IconLocation = "$discordExe,0"
+    $shortcut.Save()
+    Info "Shortcut created successfully."
+} catch {
+    ErrorMsg "Failed to create shortcut. $_"; Pause; exit 1
+}
+[int]$instanceCount = 0
+do {
+    $input = Read-Host "[INPUT] Enter the number of Discord instances to launch:"
+    if (-not [int]::TryParse($input, [ref]$instanceCount)) { ErrorMsg "Invalid input. Please enter a numeric value." }
+} until ($instanceCount -gt 0)
+Info "Launching $instanceCount instance(s) of Discord..."
+Info "Setup complete. You can access more controls in the system tray."
+$discordProcesses = @()
+for ($i = 1; $i -le $instanceCount; $i++) {
+    $proc = Start-Process $shortcutPath -WindowStyle Normal -PassThru
+    $discordProcesses += $proc
+    Start-Sleep -Seconds 3
+}
+$hwnd = (Get-Process -Id $PID).MainWindowHandle
+Add-Type -Name Win32 -Namespace Win32 -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);'
+[Win32.Win32]::ShowWindow($hwnd, 0) | Out-Null
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$bmp = New-Object System.Drawing.Bitmap 16,16
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.Clear([System.Drawing.Color]::Transparent)
+$g.Dispose()
+$hicon = $bmp.GetHicon()
+$blankIcon = [System.Drawing.Icon]::FromHandle($hicon)
+$notifyIcon = New-Object System.Windows.Forms.NotifyIcon
+$notifyIcon.Icon = $blankIcon
+$notifyIcon.Visible = $true
+$notifyIcon.Text = "Multi-Instance by bloo"
+$contextMenu = New-Object System.Windows.Forms.ContextMenu
+$menuItemShow = New-Object System.Windows.Forms.MenuItem "Show Window"
+$menuItemTerminateAll = New-Object System.Windows.Forms.MenuItem "Terminate All Clients"
+$menuItemTerminateApp = New-Object System.Windows.Forms.MenuItem "Terminate App"
+$menuItemShow.add_Click({ [Win32.Win32]::ShowWindow($hwnd, 9) | Out-Null })
+$menuItemTerminateAll.add_Click({ foreach ($proc in $discordProcesses) { if (-not $proc.HasExited) { $proc.Kill() } } })
+$menuItemTerminateApp.add_Click({ foreach ($proc in $discordProcesses) { if (-not $proc.HasExited) { $proc.Kill() } }; Remove-Item $shortcutPath -ErrorAction SilentlyContinue; $notifyIcon.Visible = $false; $appContext.ExitThread() })
+$contextMenu.MenuItems.Add($menuItemShow)
+$contextMenu.MenuItems.Add($menuItemTerminateAll)
+$contextMenu.MenuItems.Add($menuItemTerminateApp)
+for ($i = 0; $i -lt $discordProcesses.Count; $i++) {
+    $currentIndex = $i
+    $item = New-Object System.Windows.Forms.MenuItem "Terminate Client $(($currentIndex+1))"
+    $item.add_Click({ if ($discordProcesses[$currentIndex] -and -not $discordProcesses[$currentIndex].HasExited) { $discordProcesses[$currentIndex].Kill() } })
+    $contextMenu.MenuItems.Add($item)
+}
+$notifyIcon.ContextMenu = $contextMenu
+$appContext = New-Object System.Windows.Forms.ApplicationContext
+[System.Windows.Forms.Application]::Run($appContext)
+Remove-Item $shortcutPath -ErrorAction SilentlyContinue
